@@ -1,0 +1,25 @@
+//lb will act as arp responder for webservers
+define ($httpserviceip 100.0.0.45, $ws1 100.0.0.40, $ws2 100.0.0.41, $ws3 100.0.0.42, $mac aa:aa:aa:aa:aa:aa)
+
+// Create virtual interfaces
+to_ext :: FromDevice(lb1-ethl SNIFFER false)
+tap -> c :: Classifier(12/0806 20/0001, 12/0806 20/0002, 12/0800, -);
+
+//Anser to ARP requests
+c[0] -> ARPResponder(100.0.0.42 100.0.0.40/31 $mac) -> tap;
+
+//ARP replies
+c[1] -> [1]arp :: ARPQuerier(100.0.0.40, $mac) -> tap;
+
+//Handle IP packets: Allow ping and tcp port 80 traffic to httpserviceip
+c[2] -> Strip(14) -> CheckIPHeader -> ip :: IPClassifier(proto icmp && icmp type echo, dst host $httpserviceip and dst tcp port 80, -);
+ip[0] -> IPPrint -> ICMPPingResponder -> arp ->  tap;
+r :: RoundRobinIPMapper(- - $ws1 - 0 0, - - $ws2 - 0 0, - - $ws3 - 0 0)
+ip[1] -> rw :: IPRewriter(r)
+rw[0] -> IPPrint -> tap;
+
+ip[2] -> IPPrint -> Discard;
+
+
+//Discard non-IP, non-ARP packets
+c[3] -> Discard;

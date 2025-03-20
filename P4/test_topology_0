@@ -1,0 +1,243 @@
+#! /bin/bash
+
+dmac_working="True"
+arp_working="True"
+ecmp_working="False"
+dmac=$(./.dmac.py)
+TOPOLOGIES=()
+VPLS_CONF=()
+for file in 0*.json; do
+  TOPOLOGIES+=("$file")
+done
+for file in 0*.conf; do
+  VPLS_CONF+=("$file")
+done
+declare -A hosts_connectivity
+declare -A hosts_ips
+declare -a ARPEMPTY
+simple_rtt(){
+    mx h1 "./run_server.sh" &
+    mx h2 iperf3 -c ${hosts_ips['h1']} -n 100K -M 1000 > /dev/null 2>&1 &
+    mx h3 "./run_server.sh" &
+    mx h4 iperf3 -c ${hosts_ips['h3']} -n 100K -M 1000 > /dev/null 2>&1 &
+    sleep 3
+    nr_flows=$(./.rtt.py)
+    sudo killall iperf3
+}
+
+rtt_test(){
+    mx h1 "./run_server.sh" &
+    mx h2 iperf3 -c ${hosts_ips['h1']} -n 100K -M 1000 > /dev/null 2>&1 &
+    mx h2 "./run_server.sh" &
+    mx h1 iperf3 -c ${hosts_ips['h1']} -n 100K -M 1000 > /dev/null 2>&1 &
+    mx h3 "./run_server.sh"  &
+    mx h4 "./run_server.sh"  &
+    mx h5 "./run_server.sh"  &
+    mx h6 "./run_server.sh"  &
+    mx h3 iperf3 -c ${hosts_ips['h4']} -n 100K -M 1000 > /dev/null 2>&1 &
+    mx h3 iperf3 -c ${hosts_ips['h5']} -n 100K -M 1000 > /dev/null 2>&1 &
+    mx h3 iperf3 -c ${hosts_ips['h6']} -n 100K -M 1000 > /dev/null 2>&1 &
+    sleep 5
+    nr_flows=$(./.rtt.py)
+    sudo killall iperf3
+}
+
+dmac_test(){
+    if [ "$dmac" == "$(./.dmac.py)" ];then
+      dmac_working="False";fi
+}
+
+arp_test(){
+    for host1 in h1 h2 h3 h4 h5 h6
+    do
+      for host2 in ${hosts_connectivity[$host1]}
+      do
+        tmp=$(mx $host1 arp -n "${hosts_ips[$host2]}")
+        tmp=$(echo $tmp|col4)
+        ARPEMPTY+=("$tmp")
+      done
+    done
+    arppop="False"
+    for c in ${ARPEMPTY[@]}
+    do
+      if [ "$c" != "no" ]
+      then
+        arppop="True"
+	arp_working="False"
+        echo "ARP already populated"
+        break
+      fi
+    done
+    if [ "$arppop" == "False" ]; then
+      echo "Arp not yet populated"
+      arppop="True"
+    fi
+    for host1 in h1 h2 h3 h4 h5 h6
+    do
+      for host2 in ${hosts_connectivity[$host1]}
+      do
+        mx $host1 ping "${hosts_ips[$host2]}" -c 1 > /dev/null
+      done
+    done
+    declare -a ARP
+    for host1 in h1 h2 h3 h4 h5 h6
+    do
+      for host2 in ${hosts_connectivity[$host1]}
+      do
+        tmp=$(mx $host1 arp -n "${hosts_ips[$host2]}")
+        tmp=$(echo $tmp|col4)
+        ARP+=($tmp)
+      done
+    done
+    for c in ${ARP[@]}
+    do
+      if [ "$c" == "no" ]
+      then
+        arppop="False"
+	    arp_working="False"
+        echo "ARP not populated"
+        break
+      fi
+    done
+    if [ "$arppop" != "False" ];then
+        echo "ARP successfully populated";fi
+}
+
+results(){
+    echo ""
+    echo ""
+    if [ "$arp_working" == "True" ]; then
+	    echo "Multicast over provider tunnels $(printf '\u2714')"
+    else
+	    echo "Multicast over provider tunnels $(printf '\u274c')"
+    fi
+    if [ "$dmac_working" == "True" ]; then
+	    echo "Layer 2 learning $(printf '\u2714\n')"
+    else
+	    echo "Layer 2 learning $(printf '\u274c\n')"
+    fi
+    if [ $nr_flows -gt 0 ]; then
+	    echo "RTT $(printf '\u2714\n')"
+    else
+	    echo "RTT $(printf '\u274c\n')"
+    fi
+}
+
+results_last(){
+    echo "Number of flows who's RTT was inferred simultaneously: $nr_flows"
+    echo ""
+    echo ""
+    if [ "$ecmp_working" == "True" ]; then
+	    echo "ECMP $(printf '\u2714')"
+    else
+	    echo "ECMP $(printf '\u274c')"
+    fi
+    if [ "$arp_working" == "True" ]; then
+	    echo "Multicast over provider tunnels $(printf '\u2714')"
+    else
+	    echo "Multicast over provider tunnels $(printf '\u274c')"
+    fi
+    if [ "$dmac_working" == "True" ]; then
+	    echo "Layer 2 learning $(printf '\u2714\n')"
+    else
+	    echo "Layer 2 learning $(printf '\u274c\n')"
+    fi
+    if [ $nr_flows -gt 7 ]; then
+	    echo "Multiple RTT $(printf '\u2714\n')"
+    else
+	    echo "Multiple RTT $(printf '\u274c\n')"
+    fi
+}
+
+case $1 in
+  "1")
+    hosts_connectivity=( ["h1"]="h2" ["h2"]="h1" ["h3"]="h4" ["h4"]="h3" )
+    hosts_ips=( ["h1"]="10.0.0.1" ["h2"]="10.0.0.2" ["h3"]="10.0.0.3" ["h4"]="10.0.0.4" )
+    arp_test
+    dmac_test
+    simple_rtt
+    results
+    ;;
+  "2")
+    hosts_connectivity=( ["h1"]="h2" ["h2"]="h1" ["h3"]="h4" ["h4"]="h3" )
+    hosts_ips=( ["h1"]="10.0.0.1" ["h2"]="10.0.0.2" ["h3"]="10.0.0.1" ["h4"]="10.0.0.2" )
+    arp_test
+    dmac_test
+    simple_rtt
+    results
+    ;;
+  "3")
+    hosts_connectivity=( ["h1"]="h2 h5" ["h2"]="h1 h5" ["h3"]="h4 h6" ["h4"]="h3 h6" ["h5"]="h1 h2" ["h6"]="h3 h4" )
+    hosts_ips=( ["h1"]="10.0.0.1" ["h2"]="10.0.0.2" ["h3"]="10.0.0.1" ["h4"]="10.0.0.2" ["h5"]="10.0.0.5" ["h6"]="10.0.0.6" )
+    arp_test
+    dmac_test
+    simple_rtt
+    results
+    ;;
+  "4")
+    hosts_connectivity=( ["h1"]="h2" ["h2"]="h1" ["h3"]="h4" ["h4"]="h3" )
+    hosts_ips=( ["h1"]="10.0.0.1" ["h2"]="10.0.0.2" ["h3"]="10.0.0.1" ["h4"]="10.0.0.2" )
+    arp_test
+    dmac_test
+    simple_rtt
+    results
+    ;;
+  "5")
+    hosts_connectivity=( ["h1"]="h2" ["h2"]="h1" ["h3"]="h4" ["h4"]="h3" )
+    hosts_ips=( ["h1"]="10.0.0.1" ["h2"]="10.0.0.2" ["h3"]="10.0.0.1" ["h4"]="10.0.0.2" )
+    arp_test
+    dmac_test
+    simple_rtt
+    results
+    ;;
+  "6")
+    hosts_connectivity=( ["h1"]="h2" ["h2"]="h1" ["h3"]="h4 h5 h6" ["h4"]="h3 h5 h6" ["h5"]="h3 h4 h6" ["h6"]="h3 h4 h5" )
+    hosts_ips=( ["h1"]="10.0.0.1" ["h2"]="10.0.0.2" ["h3"]="10.0.0.1" ["h4"]="10.0.0.2" ["h5"]="10.0.0.3" ["h6"]="10.0.0.4" )
+    arp_test
+    dmac_test
+    rtt_test
+    
+     
+    # ECMP testing only tested for topology 6
+    sudo tcpdump -i s1-eth3 > dump1 2>&1 &
+    sudo tcpdump -i s1-eth4 > dump2 2>&1 &
+    mx h5 "./run_server.sh"  &
+    mx h6 "./run_server.sh"  &
+    sleep 1
+    mx h3 iperf3 -c ${hosts_ips['h5']} -n 1K -M 1000 2>&1 /dev/null
+    sudo killall tcpdump
+    bkp1=$(cat dump1)
+    bkp2=$(cat dump2)
+    if [ ${#bkp1} -gt ${#bkp2} ]
+    then
+      R=3
+    else
+      R=4
+    fi
+    sudo tcpdump -i s1-eth3 > dump1 2>&1 &
+    sudo tcpdump -i s1-eth4 > dump2 2>&1 &
+    mx h3 iperf3 -c ${hosts_ips['h6']} -n 1K -M 1000 2>&1 /dev/null
+    sudo killall tcpdump
+    bkp1=$(cat dump1)
+    bkp2=$(cat dump2)
+    if [ ${#bkp1} -gt ${#bkp2} ]
+    then
+      RR=3
+    else
+      RR=4
+    fi
+    if [ $R -eq $RR ]; then
+        echo "ECMP did not successfully route different paths"
+    else
+        echo "ECMP successfully routed different paths"
+	ecmp_working="True"
+    fi
+    sudo killall iperf3
+    sudo killall tcpdump
+    sudo kill -9 $(jobs -ps)
+    rm dump*
+    results_last
+    ;;
+esac
+
+
